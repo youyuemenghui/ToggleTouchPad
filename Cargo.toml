@@ -1,0 +1,8 @@
+[package]
+name = "ToggleTouchPad"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libudev = "0.3.0"
+libudev-sys = "0.1.4"
