@@ -1,82 +1,44 @@
-use libudev::{Context, Enumerator};
-use std::ffi::OsStr;
-use std::path::PathBuf;
-use std::process::exit;
-struct TouchPad {
-    path: PathBuf,
+use std::process::{Command, exit};
+use toggle_touchpad::parse::{Permissions, parse_args};
+use toggle_touchpad::touchpad::TouchPad;
+use toggle_touchpad::touchpad::notify;
+fn run_privileged_task(uid: u32, gid: u32) {
+    // 直接执行特权操作
+    println!("切换到root用户");
+    let tpd_enable = TouchPad::new(uid, gid);
+    tpd_enable.toggle();
+    tpd_enable.send_notify();
 }
-impl TouchPad {
-    pub fn new() -> Self {
-        let path = match Self::find_touchpad_sysfs() {
-            Some(p) => p,
-            None => {
-                eprintln!("未找到触摸板");
-                exit(1)
-            }
-        };
-        let new_path = path.join("device/inhibited");
-        Self { path: new_path }
-    }
-    fn find_touchpad_sysfs() -> Option<PathBuf> {
-        let ctx = Context::new().ok()?;
-        let mut en = Enumerator::new(&ctx).ok()?;
-
-        // 只列出 input 子系统的设备
-        en.match_subsystem("input").ok()?;
-
-        for dev in en.scan_devices().ok()? {
-            // 我们只关心有事件节点的输入设备
-            let devnode = dev.syspath()?;
-            if !devnode.file_name()?.to_str()?.starts_with("event") {
-                continue;
-            }
-
-            // 读 udev 属性 ID_INPUT_TOUCHPAD
-            if dev
-                .property_value(OsStr::new("ID_INPUT_TOUCHPAD"))
-                .or(Some(OsStr::new("0")))?
-                == OsStr::new("1")
-            {
-                // sysfs 路径就是 /sys + syspath
-                return Some(PathBuf::from("/sys").join(dev.syspath().unwrap()));
-            }
-        }
-        None
-    }
-    fn status(&self) -> bool {
-        let tpd_path = self.path.clone();
-        let result = std::fs::read_to_string(tpd_path);
-        let s = match result {
-            Ok(f) => f,
-            Err(_) => {
-                println!("文件读取错误");
-                exit(1)
-            }
-        };
-        let parse = s.trim().parse::<u32>();
-        let flag = match parse {
-            Ok(f) => f,
-            Err(_) => {
-                println!("读取标志位错误");
-                exit(1)
-            }
-        };
-        match flag {
-            0 => false,
-            1 => true,
-            _ => panic!("不可恢复错误"),
-        }
-    }
-    pub fn toggle(&self) {
-        let new = if self.status() { "0\n" } else { "1\n" };
-        std::fs::write(&self.path, new).unwrap_or_else(|e| {
-            eprintln!("write {}: {}", self.path.display(), e);
-            std::process::exit(1);
-        });
-    }
-}
-
 fn main() {
-    let tpd = TouchPad::new();
-    tpd.toggle();
+    let perm = parse_args();
+    match perm {
+        Permissions::Rooted { uid, gid } => {
+            run_privileged_task(uid, gid);
+        }
+        Permissions::PkexecNeedRoot { uid, gid } => {
+            let prog_name = std::env::current_exe().unwrap();
+            //使用pkexec尝试升级自身的子进程权限
+            let status = Command::new("pkexec")
+                .args(["env", format!("TPD_UID={}", uid).as_str()])
+                .args(["env", format!("TPD_GID={}", gid).as_str()])
+                .arg(&prog_name)
+                .arg("-e")
+                .status()
+                .expect("pkexec 执行失败");
+            println!("已恢复普通用户代码");
+            let tpd_enable = TouchPad::new(uid, gid);
+            let msg = if tpd_enable.status() {
+                "触摸板已关闭"
+            } else {
+                "触摸板已开启"
+            };
+            notify::pkexec_send(msg, 3000).unwrap_or_else(|e| eprintln!("{}", e));
+            exit(status.code().unwrap_or(1));
+        }
+        Permissions::PkexecRooted { uid, gid } => {
+            println!("切换到root用户");
+            let tpd_enable = TouchPad::new(uid, gid);
+            tpd_enable.toggle();
+        }
+    }
 }

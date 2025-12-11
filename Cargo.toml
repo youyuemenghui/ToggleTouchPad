@@ -1,8 +1,10 @@
 [package]
-name = "ToggleTouchPad"
+name = "toggle_touchpad"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 libudev = "0.3.0"
 libudev-sys = "0.1.4"
+users = "0.11.0"
+nix = { version = "0.30.1", features = ["user"] }
