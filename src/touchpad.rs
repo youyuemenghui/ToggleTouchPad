@@ -12,16 +12,19 @@ pub struct TouchPad {
 impl TouchPad {
     // tools function
     fn find_touchpad_sysfs() -> Option<PathBuf> {
-        let ctx = Context::new().ok()?;
-        let mut enumerator = Enumerator::new(&ctx).ok()?;
+        //创建udev上下文,没数据
+        let udev_ctx = Context::new().ok()?;
+        //创建枚举上下文,放入上下文中
+        let mut udev_enum = Enumerator::new(&udev_ctx).ok()?;
 
         // 只列出 input 子系统的设备
-        enumerator.match_subsystem("input").ok()?;
+        udev_enum.match_subsystem("input").ok()?;
 
-        for dev in enumerator.scan_devices().ok()? {
+        for dev in udev_enum.scan_devices().ok()? {
             // 我们只关心有事件节点的输入设备
-            let devnode = dev.syspath()?;
-            if !devnode.file_name()?.to_str()?.starts_with("event") {
+            let dev_path = dev.syspath()?;
+            // 跳过路径中不是以事件开头的设备
+            if !dev_path.file_name()?.to_str()?.starts_with("event") {
                 continue;
             }
             // 读 udev 属性 ID_INPUT_TOUCHPAD
@@ -40,7 +43,7 @@ impl TouchPad {
         let dev_path = match Self::find_touchpad_sysfs() {
             Some(p) => p,
             None => {
-                eprintln!("未找到触摸板");
+                eprintln!("ERROR: 未找到触摸板");
                 exit(1)
             }
         };
@@ -52,20 +55,16 @@ impl TouchPad {
         }
     }
     pub fn status(&self) -> bool {
-        let tpd_path = self.path.clone();
-        let result = std::fs::read_to_string(tpd_path);
-        let s = match result {
-            Ok(f) => f,
-            Err(_) => {
-                println!("文件读取错误");
-                exit(1)
-            }
-        };
+        let tpd_inhid_file = self.path.clone();
+        let s = std::fs::read_to_string(tpd_inhid_file).unwrap_or_else(|_| {
+            eprintln!("ERROR: 文件读取错误");
+            exit(1)
+        });
         let parse = s.trim().parse::<u32>();
         let flag = match parse {
             Ok(f) => f,
             Err(_) => {
-                println!("读取标志位错误");
+                eprintln!("ERROR: 读取标志位错误");
                 exit(1)
             }
         };
@@ -76,15 +75,15 @@ impl TouchPad {
         }
     }
     pub fn toggle(&self) {
-        let new = if self.status() { "0\n" } else { "1\n" };
-        std::fs::write(&self.path, new).unwrap_or_else(|e| {
+        let enable = if self.status() { "0\n" } else { "1\n" };
+        std::fs::write(&self.path, enable).unwrap_or_else(|e| {
             eprintln!("write {}: {}", self.path.display(), e);
-            std::process::exit(1);
+            exit(1);
         });
     }
     pub fn send_notify(&self) {
-        let is_close = self.status();
-        if is_close {
+        let tpd_status = self.status();
+        if tpd_status {
             {
                 let _priv_guard = perm_guard::PrivDropGuard::to_user(self.uid, self.gid).unwrap();
                 notify::sudo_send("触摸板已关闭", 3000).unwrap_or_else(|e| eprintln!("{}", e));
